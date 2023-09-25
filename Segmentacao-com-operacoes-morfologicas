@@ -1,0 +1,193 @@
+// Convoluções 
+// Para realizar convoluções lineares em imagens, use image.convolve(). 
+// O único argumento para convolver é um ee.Kernelc que é especificado por uma forma e os pesos no kernel.
+// Cada pixel da imagem de saída convolve() é a combinação linear dos valores do kernel e os pixels da imagem
+// de entrada cobertos pelo kernel. Os kernels são aplicados a cada banda individualmente. 
+// Por exemplo, você pode querer usar um kernel low-pass (suavização) para remover informações de alta frequência. 
+
+//Region Of interest (ROI)
+var roi = ee.FeatureCollection('users/sandrosenamachado/BR_Municipios_2021')
+                                      .filter(ee.Filter.or(ee.Filter.eq('NM_MUN','Barreiras')))
+//contorno da roi                                      
+var empty = ee.Image().byte();
+var contorno = empty.paint({ 
+  featureCollection: roi,
+  color: 1,
+  width: 2
+});
+
+Map.centerObject(roi,10)
+
+Map.addLayer(contorno, {palette: 'black'}, 'Município');
+
+// Function to mask clouds using the Sentinel-2 QA band.
+function maskS2clouds(image) {
+  var qa = image.select('QA60')
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(
+             qa.bitwiseAnd(cirrusBitMask).eq(0))
+
+  // Return the masked and scaled data, without the QA bands.
+  return image.updateMask(mask).divide(10000)
+      .select("B.*")
+      .copyProperties(image, ["system:time_start"])
+      .copyProperties(image, image.propertyNames())
+      .set('data', image.date().format('YYYY-MM-dd'))
+      .set({'millis': image.date().millis()})
+      .set({'ID': image.get('system:index')})
+}
+
+/***************************************Índices para coleção ****************************************/
+// // //Índices para coleção 
+function indices (image) {
+  //Indices de Vegetação 
+  var ndvi =  image.normalizedDifference(['B8', 'B4']).rename('NDVI');// Rouse 1973
+  
+  var evi = image.expression('2.5 * ((N - R) / (N + (6 * R) - (7.5 * B) + 1))', 
+  { //Huete 2002
+        'N': image.select('B8'), 'R': image.select('B4'), 'B': image.select('B2')}).rename('EVI');
+  var savi = image.expression('(1 + L ) * float(nir - red)/ (nir + red + L)',{ 'nir': image.select('B8'),
+        'red': image.select('B4'),'L':1}).rename('SAVI');
+    //Índices de Água
+  var ndwi = image.normalizedDifference(['B3', 'B8']).rename ('NDWI'); //Mc Feeters 1996
+  var ndwi_veg = image.normalizedDifference(['B8', 'B6']).rename ('NDWI_VEG'); //Gao 1996
+  var mndwi = image.normalizedDifference(['B3', 'B6']).rename('MNDWI'); // Xu 2006
+
+  return image.addBands([ndvi,evi,savi,ndwi,ndwi_veg,mndwi])}
+
+//Definição da coleção de imagens
+var sentinel = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                                .filterBounds(roi)
+                                .filterDate('2020-01-01','2022-01-01')
+                                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',0.1))
+                                .map(maskS2clouds)
+                                
+                                
+print('Qual é o id da coleção:', sentinel.get('system:id'))
+print('id da primeira imagem',sentinel.first().get('system:index'))
+print('Qtds',sentinel.size())
+
+/******************************Aplicando os índices na coleção**********************************/
+var s2_indices = sentinel.select("B.*")
+                         .map(indices)
+                         .max()
+                         .clip(roi)
+
+var evi = s2_indices.select('EVI')
+var mask_evi = evi.gte(0.5)
+                         
+print('s2_indices ', s2_indices) 
+print ('evi', evi)
+
+Map.addLayer(evi,{palette:['white','red','orange','yellow','green'],min:0.40, max:1},'EVI')
+//Gera um kernel gaussiano a partir de um gaussiano contínuo amostrado.
+var gaussiano = ee.Kernel.gaussian(2)
+
+//Gera um kernel de distância baseado na distância euclidiana (linha reta).
+var euclidiana = ee.Kernel.euclidean(2)
+
+//Gera um kernel de detecção de borda 3x3 Laplacian-4
+var Laplacian_4 = ee.Kernel.laplacian4()
+
+// Gera um kernel de detecção de borda 3x3 Laplacian-8
+var Laplacian_8 = ee.Kernel.laplacian8()
+
+//Gera um kernel de distância baseado na distância de Chebyshev (maior distância ao longo de qualquer dimensão).
+var Chebyshev = ee.Kernel.chebyshev(2)
+
+//Suavize a imagem convoluindo com o kernel
+var con_gau = mask_evi.convolve(gaussiano)
+var con_euc = mask_evi.convolve(euclidiana)
+var con_lap4 = con_gau.eq(1).convolve(Laplacian_4).selfMask()
+var con_lap8 = con_gau.eq(1).convolve(Laplacian_8).selfMask()
+var con_che = mask_evi.convolve(Chebyshev)
+
+//Visualização 
+Map.addLayer(mask_evi,{palette:['white','red','orange','yellow','green'],min:0.40, max:1},'mask_evi')
+Map.addLayer(con_gau,{palette:['white','red','orange','yellow','green'],min:0.40, max:1},'Gaussiano')
+Map.addLayer(con_euc,{palette:['white','red','orange','yellow','green'],min:10, max:50},'Euclidiana')
+Map.addLayer(con_lap4,{palette:['cyan']},'Laplacian_4')
+Map.addLayer(con_lap8,{palette:['cyan']},'Laplacian_8')
+Map.addLayer(con_che,{palette:['white','red','orange','yellow','green'],min:6, max:40},'Chebyshev')
+
+// Realiza a detecção de bordas do Canny e exibe o resultado. //
+var canny = ee.Algorithms.CannyEdgeDetector({image:mask_evi, threshold:0.3, sigma:1.5}).multiply(255).selfMask()
+Map.addLayer(canny,{palette:['red']},'Bordas')
+// Execute a transformação de Hough do resultado do Canny e exiba.
+var hough = ee.Algorithms.HoughTransform({
+                    image:canny, 
+                    gridSize:256, 
+                    inputThreshold:64, 
+                    lineThreshold:10, 
+                    smooth:true}).selfMask()
+
+Map.addLayer(hough,{palette:['red']},'Hough')
+
+/*********************mapbiomas**********************************/
+//Classificação uso do solo a partir do MapBiomas
+
+//remap() permite converter valores de classe em inteiros consecutivos
+// Os preditores devem ser numéricos
+
+//Collection
+var mapbiomas = 'projects/mapbiomas-workspace/public/collection7/mapbiomas_collection70_integration_v2'
+
+//Define a imagem collection 
+var mapbiomas = ee.Image(mapbiomas)
+print(mapbiomas)
+
+//Selecione a coleção que deseja
+var lulc_2021 = mapbiomas.select('classification_2021')
+
+
+//Palette color
+var palettes = require('users/mapbiomas/modules:Palettes.js').get('classification6');
+var vis = {
+  palette:palettes,
+  min:0,
+  max:49
+}
+print('Paleta de cores',palettes)
+
+//Adiocione o Layer
+Map.addLayer(lulc_2021,vis,'Uso 2021',false)
+
+//Agora vamos recortar nossas bases para a mesma área e adicionar uma coleção a outra
+var mapbiomas_clip = lulc_2021.clip(roi)
+var sentinel_reduce_median = sentinel.median()
+var input_clip = sentinel_reduce_median.clip(roi)
+
+// Faça uma amostra das imagens de entrada para obter um FeatureCollection de dados de treinamento
+var training = input_clip.addBands(mapbiomas_clip).sample({
+  region: roi,
+  numPixels: 2500,
+  seed: 0,
+  geometries: true,
+  tileScale: 16
+});
+
+print('Verifique as amostras criadas',training.limit(10))
+
+
+// Faça um classificador Random Forest e treine-o.
+var classifier = ee.Classifier.smileRandomForest(1000)
+    .train({
+      features: training,
+      classProperty: 'classification_2021',
+      inputProperties: ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5',
+                        'SR_B6', 'SR_B7','NDVI','EVI','MNDWI','NDWI_VEG','NBR']
+    });
+    
+// Classifique as imagens de entrada.
+var classified = input_clip.classify(classifier);
+
+//Adicione a Classificação 
+
+Map.addLayer(mapbiomas_clip,vis,'Uso 2021 SG')
+Map.addLayer(classified.clip(roi),vis, 'classification')
+Map.centerObject(roi,10)
