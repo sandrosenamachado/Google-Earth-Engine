@@ -1,0 +1,175 @@
+// First of all, let's make our elevation transect
+
+var reno = [-50.53128911532434,-19.35994274667781];
+var sf = [-47.71878911532434,-19.33921122462052];
+var transect = ee.Geometry.LineString([reno, sf]);
+
+// Load Elevation Digital Model (EDM)
+
+var elevation = ee.Image("USGS/SRTMGL1_003");  // Extract the elevation profile.
+var startingPoint = ee.FeatureCollection(ee.Geometry.Point(sf));
+var distance = startingPoint.distance(500000);
+var image = distance.addBands(elevation);
+
+// Extract band values along the transect line.
+var array = image.reduceRegion(ee.Reducer.toList(), transect, 1000)
+                 .toArray(image.bandNames());
+
+// Sort points along the transect by their distance from the starting point.
+var distances = array.slice(0, 0, 1);
+array = array.sort(distances);
+
+// Create arrays for charting.
+var elevationAndTemp = array.slice(0, 1);  // For the Y axis.
+// Project distance slice to create a 1-D array for x-axis values.
+var distance = array.slice(0, 0, 1).project([1]);
+
+// Generate and style the chart.
+var chart = ui.Chart.array.values(elevationAndTemp, 1, distance)
+    .setChartType('LineChart')
+    .setSeriesNames(['Elevation'])
+    .setOptions({
+      title: 'Elevation transect',
+      vAxes: {
+        0: {
+          title: 'Average seasonal temperature (Celsius)'
+        },
+        1: {
+          title: 'Elevation (meters)',
+          baselineColor: 'transparent'
+        }
+      },
+      hAxis: {
+        title: 'Distance from SF (m)'
+      },
+      interpolateNulls: true,
+      pointSize: 0,
+      lineWidth: 1,
+      // Our chart has two Y axes: one for temperature and one for elevation.
+      // The Visualization API allows us to assign each series to a specific
+      // Y axis, which we do here:
+      series: {
+        0: {targetAxisIndex: 1},
+        1: {targetAxisIndex: 0},
+        2: {targetAxisIndex: 0}
+      }
+    });
+
+print(chart);
+Map.addLayer(elevation, {min: 0, max: 1146}), 'elevation';
+Map.addLayer(transect, {color: 'FF0000'});
+
+
+// Set a Region Of Interest (ROI)
+var roi = ee.FeatureCollection('users/sandrosenamachado/estados_BR')
+                                .filter(ee.Filter.eq('name','MINAS GERAIS'))
+                                
+Map.centerObject(roi,6)
+
+// Loading the image
+var srtm = ee.Image("USGS/SRTMGL1_003").clip(roi)
+
+var fillminima = ee.Terrain.fillMinima(srtm) // (MDE hidrologicamente consistente)
+
+// Calculate slope. Units are degrees, range is [0,90).
+var slope = ee.Terrain.slope(fillminima)
+
+// Calculate aspect. Units are degrees where 0=N, 90=E, 180=S, 270=W.
+var aspect = ee.Terrain.aspect(fillminima);
+
+//Calculate %
+//Percentage = [ Tan ( Degrees ) ] x 100
+//Confirme os valores aqui https://www.calcunation.com/calculator/degrees-to-percent.php
+//https://jumk.de/calc/angulo-pt.shtml
+//tan Calcula a tangente da entrada em radianos.
+var percent = slope.divide(180).multiply(Math.PI).tan().multiply(100).rename('Percent')
+Map.addLayer(percent, {min: 0, max: 10}, 'Percent');
+
+// Use the ee.Terrain.products function to calculate slope, aspect, and
+// hillshade simultaneously. The output bands are appended to the input image.
+// Hillshade is calculated based on illumination azimuth=270, elevation=45.
+
+var terrain = ee.Terrain.products(fillminima);
+print('ee.Terrain.products bands', terrain.bandNames());
+
+
+// Visualize slope, aspect, hillshade e Hydrologically Consistent Model (fill.minima)
+
+Map.addLayer(slope,{palette:['#008900','#69b319','#bde032','#ebe16c','#ebd959','#d0ac45','#ba993e','#a98533','#8f7029','#6c5129'],min: 0, max: 89.99},'Slope')
+Map.addLayer(aspect, {palette:['blue','cyan','green','yellow','orange','red'],min: 0, max: 359.99},'Aspect')
+Map.addLayer(terrain.select('hillshade'), {min: 0, max: 255}, 'Hillshade');
+Map.addLayer(fillminima, {palette:['#008900','#69b319','#bde032','#ebe16c','#ebd959','#d0ac45','#ba993e','#a98533','#8f7029','#6c5129'],min:0,max:1571},'Hydrologically Consistent Model')
+
+// Visualize contour lines
+var lines = ee.List.sequence(0,1000,30)
+
+var contourlines = lines.map(function(line){
+  var mycontour = fillminima.convolve(ee.Kernel.gaussian(5,3))
+                            .subtract(ee.Image.constant(line))
+                            .zeroCrossing()
+                            .multiply(ee.Image.constant(line))
+                            .toFloat();
+      return mycontour.mask(mycontour);
+})
+
+contourlines = ee.ImageCollection(contourlines).mosaic()
+
+Map.addLayer(contourlines,{min:0, max:5000, palette:['#001f00']},'contours')
+
+/*******************************TAGEE******************************/
+//How TAGEE uses spheroidal geometries and elevation nodes of a
+//3x3 moving window to calculate partial derivatives and therefore
+//terrain attributes, visualization of outputs is affected by scale,
+//which requires histogram adjustment for proper viewing.
+//This happens because GEE produces different pyramids from
+//your data (from local to global scale) and
+//consequently the pixel size changes dynamically, affecting the range of
+//estimated values of attributes. Until you specify your final resolution,
+//say 30m/pixel, pyramids will dynamically affect the view of an exit
+//for different display scales. You can determine your final resolution
+//exporting the results to assets and importing back additional processing or
+//map composition.
+
+var TAGEE = require('users/joselucassafanelli/TAGEE:TAGEE-functions');
+
+// Loading SRTM 30 m
+
+var demSRTM = srtm.rename('DEM');
+
+// Smoothing filter
+var gaussianFilter = ee.Kernel.gaussian({
+  radius: 3, sigma: 2, units: 'pixels', normalize: true
+});
+
+// Smoothing the DEM with the gaussian kernel.
+var demSRTM = demSRTM.convolve(gaussianFilter).resample("bilinear");
+
+// Terrain analysis
+
+var DEMAttributes = TAGEE.terrainAnalysis(TAGEE, demSRTM, roi)
+print(DEMAttributes.bandNames(), 'Parameters of Terrain');
+
+// Visualization
+// TAGEE has an additional feature to facilitate visualization and adapted to a scale
+//dynamics (legend), since the distances in pixels for derivative calculations
+//are influenced by the viewing level. The legend limits are estimated by the
+//5th and 95th percentiles existing within the bounding box.
+
+//For the makeVisualization function, you need to specify:
+
+//Attributes on the multiband object
+//Attribute name (string, e.g. 'VerticalCurvature')
+//View level (string, e.g. 'level2')
+//bounding box object
+//Color palette (string, e.g. 'rainbow')
+
+// Available color-pallettes: 'arco-íris', 'inferno', 'cubehelix', 'red2green', 'green2red', 'elevation', 'aspect' e 'hillshade'.
+
+var vizVC = TAGEE.makeVisualization(DEMAttributes, 'VerticalCurvature', 'level2', roi, 'rainbow');
+Map.addLayer(vizVC, {}, 'VerticalCurvature');
+
+var vizslope = TAGEE.makeVisualization(DEMAttributes, 'Slope', 'level12', roi, 'green2red');
+Map.addLayer(vizslope, {}, 'Slope TAGEE');
+
+var vizshapeindex = TAGEE.makeVisualization(DEMAttributes, 'ShapeIndex', 'level12', roi, 'inferno');
+Map.addLayer(vizshapeindex, {}, 'Shape Index TAGEE');
