@@ -1,4 +1,5 @@
-// Convolutions
+// Segmentation with Morphological Operations
+
 // To perform linear convolutions on images, use image.convolve().
 // The only argument to convolve is an ee.Kernelc which is specified by a shape and the weights in the kernel.
 // Each pixel of the output image convolve() is the linear combination of the kernel values and the image pixels
