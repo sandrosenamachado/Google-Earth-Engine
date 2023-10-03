@@ -1,9 +1,9 @@
-// Convoluções 
-// Para realizar convoluções lineares em imagens, use image.convolve(). 
-// O único argumento para convolver é um ee.Kernelc que é especificado por uma forma e os pesos no kernel.
-// Cada pixel da imagem de saída convolve() é a combinação linear dos valores do kernel e os pixels da imagem
-// de entrada cobertos pelo kernel. Os kernels são aplicados a cada banda individualmente. 
-// Por exemplo, você pode querer usar um kernel low-pass (suavização) para remover informações de alta frequência. 
+// Convolutions
+// To perform linear convolutions on images, use image.convolve().
+// The only argument to convolve is an ee.Kernelc which is specified by a shape and the weights in the kernel.
+// Each pixel of the output image convolve() is the linear combination of the kernel values and the image pixels
+// inputs covered by the kernel. Kernels are applied to each band individually.
+// For example, you may want to use a low-pass (smoothing) kernel to remove high-frequency information.
 
 //Region Of interest (ROI)
 var roi = ee.FeatureCollection('users/sandrosenamachado/BR_Municipios_2021')
